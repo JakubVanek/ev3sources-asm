@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<language id="logo" _name="Logo" version="2.0" _section="Source">
+	<metadata>
+		<property name="mimetypes"></property>
+		<property name="globs">*.logo</property>
+		<property name="line-comment-start">;</property>
+	</metadata>
+
+	<styles>
+		<style id="comment"							_name="Comment"							map-to="def:comment"/>
+		<style id="function"						_name="Function"						map-to="def:function"/>
+		<style id="string"							_name="String"							map-to="def:string"/>
+		<style id="keyword"							_name="Keyword"						 	map-to="def:keyword"/>
+		<style id="variable"						_name="Variable"						map-to="sh:variable"/>
+		<style id="list"								_name="Lists"								map-to="def:keyword"/>
+		<style id="others"							_name="Others"							map-to="def:keyword"/>
+		<style id="decimal"      	     	_name="Decimal number"      map-to="def:decimal"/>
+    <style id="octal"        		    _name="Octal number"        map-to="def:base-n-integer"/>
+    <style id="hexadecimal"       	_name="Hexadecimal number"  map-to="def:base-n-integer"/>
+    <style id="const"               _name="Constants"           map-to="def:type"/>
+    <style id="manip"               _name="Manipulators"        map-to="def:type"/>
+    <style id="predicate"           _name="Predicates"          map-to="def:type"/>
+	</styles>
+	
+	<definitions>
+		<define-regex id="ichar" extended="true">[^\(\)\[\]\ \t\r\n;]</define-regex>
+		<define-regex id="kstart" extended="true">(?&lt;!\%{ichar})</define-regex>
+		<define-regex id="kend" extended="true">(?!\%{ichar})</define-regex>
+    
+		<context id="line-comment" style-ref="comment" end-at-line-end="true" class="comment" class-disabled="no-spell-check">
+			<start>;</start>
+			<include>
+				<context ref="def:in-comment"/>
+			</include>	
+		</context>
+		
+		<context id="double-quoted-string" style-ref="string" class="string" class-disabled="no-spell-check">
+			<match>"\%{ichar}*</match>
+		</context>
+		
+		<context id="single-quoted-string" style-ref="string" class="string" class-disabled="no-spell-check">
+			<start>'</start>
+			<end>'</end>
+		</context>
+	
+		<context id="def-func">
+			<match>\%{kstart}(define)\s+(\%{ichar}+)\s*(\[)(\s*(\%{ichar}+\s*)*)(\])</match>
+			<include>
+				<context id="def-word" sub-pattern="1" style-ref="keyword"/>
+				<context id="func-name"  sub-pattern="2" style-ref="function"/>
+				<context id="arg-open"  sub-pattern="3" style-ref="function"/>
+				<context id="arg-ident"  sub-pattern="4" style-ref="variable"/>
+				<context id="arg-close"  sub-pattern="6" style-ref="function"/>
+			</include>
+		</context>
+		
+		<context id="make">
+			<match>\%{kstart}(make)\s+(("\%{ichar}*)|('.*')|(:\%{ichar}+))</match>
+			<include>
+				<context id="make-word" sub-pattern="1" style-ref="keyword"/>
+				<context id="make-id" sub-pattern="2" style-ref="variable"/>
+			</include>
+		</context>
+		
+		<context id="to-func">
+			<match>\%{kstart}(to)\s+(\%{ichar}+)(\s+(\s*(:\%{ichar}+\s*)*))?</match>
+			<include>
+				<context id="to-word" sub-pattern="1" style-ref="keyword"/>
+				<context id="func-name-to"  sub-pattern="2" style-ref="function"/>
+				<context id="args"  sub-pattern="4" style-ref="variable"/>
+			</include>
+		</context>
+		
+		<context id="to-end" style-ref="keyword">
+			<match>end</match>
+		</context>
+		
+		<context id="nums-dec" style-ref="decimal">
+			<match>\%{kstart}(\+|\-)?\d+(\.\d+)?((e|E)\d+)?\%{kend}</match>
+		</context>
+		<context id="nums-hex" style-ref="hexadecimal">
+			<match>\%{kstart}\$[0-9a-fA-F]+\%{kend}</match>
+		</context>
+		<context id="nums-oct" style-ref="octal">
+			<match>\%{kstart}0[0-7]+\%{kend}</match>
+		</context>
+		
+		<context id="list-begin" style-ref="list">
+			<match>\[</match>
+		</context>
+		<context id="list-end" style-ref="list">
+			<match>\]</match>
+		</context>
+		<context id="keywords-main" style-ref="keyword">
+			<prefix>\%{kstart}</prefix><suffix>\%{kend}</suffix>
+			<keyword>print</keyword>
+			<keyword>repeat</keyword>
+			<keyword>if</keyword>
+			<keyword>ifelse</keyword>
+			<keyword>stop</keyword>
+			<keyword>output</keyword>
+			<keyword>dotimes</keyword>
+			<keyword>dolist</keyword>
+			<keyword>error</keyword>
+			<keyword>stopme</keyword>
+			<keyword>make</keyword>
+			<keyword>define</keyword>
+			<keyword>let</keyword>
+			<keyword>run</keyword>
+			<keyword>loop</keyword>
+			<keyword>forever</keyword>
+			<keyword>carefully</keyword>
+			<keyword>load</keyword>
+			<keyword>reload</keyword>
+			<keyword>wait</keyword>
+			<keyword>bytearray</keyword>
+			<keyword>\(</keyword>
+			<keyword>\)</keyword>
+			<keyword>setstatus</keyword>
+			<keyword>setfile-field</keyword>
+			<keyword>setitem</keyword>
+			<keyword>setnth</keyword>
+			<keyword>removeitem</keyword>
+			<keyword>removeitempos</keyword>
+			<keyword>clearname</keyword>
+			<keyword>showcc</keyword>
+			<keyword>unwind-protect</keyword>
+			<keyword>dispatch</keyword>
+			<keyword>selectq</keyword>
+			<keyword>put</keyword>
+			<keyword>erplist</keyword>
+			<keyword>filetostring</keyword>
+			<keyword>resourcetostring</keyword>
+			<keyword>stringtofile</keyword>
+			<keyword>setread</keyword>
+			<keyword>lineback</keyword>
+			<keyword>logopen</keyword>
+			<keyword>logprint</keyword>
+			<keyword>logclose</keyword>
+			<keyword>setfread</keyword>
+			<keyword>fclose</keyword>
+			<keyword>erfile</keyword>
+			<keyword>bytestofile</keyword>
+			<keyword>filetobytes</keyword>
+			<keyword>setmoddate</keyword>
+			<keyword>mkdir</keyword>
+			<keyword>clearstringbuffer</keyword>
+			<keyword>addtostringbuffer</keyword>
+			<keyword>addtostringbufferstart</keyword>
+			<keyword>scanhex</keyword>
+			<keyword>resett</keyword>
+		</context>
+		<context id="keywords-const" style-ref="const">
+			<prefix>\%{kstart}</prefix><suffix>\%{kend}</suffix>
+			<keyword>true</keyword>
+			<keyword>false</keyword>
+			<keyword>\%nothing\%</keyword>
+			<keyword>tab</keyword>
+		</context>
+		<context id="keywords-manip" style-ref="manip">
+			<prefix>\%{kstart}</prefix><suffix>\%{kend}</suffix>
+			<keyword>sum</keyword>
+			<keyword>remainder</keyword>
+			<keyword>difference</keyword>
+			<keyword>diff</keyword>
+			<keyword>product</keyword>
+			<keyword>quotient</keyword>
+			<keyword>int</keyword>
+			<keyword>minus</keyword>
+			<keyword>round</keyword>
+			<keyword>sqrt</keyword>
+			<keyword>sin</keyword>
+			<keyword>cos</keyword>
+			<keyword>tan</keyword>
+			<keyword>abs</keyword>
+			<keyword>power</keyword>
+			<keyword>arctan</keyword>
+			<keyword>pi</keyword>
+			<keyword>exp</keyword>
+			<keyword>arctan2</keyword>
+			<keyword>ln</keyword>
+			<keyword>logand</keyword>
+			<keyword>logior</keyword>
+			<keyword>logxor</keyword>
+			<keyword>lsh</keyword>
+			<keyword>random</keyword>
+			<keyword>min</keyword>
+			<keyword>max</keyword>
+			<keyword>thing</keyword>
+			<keyword>quote</keyword>
+			<keyword>sentence</keyword>
+			<keyword>se</keyword>
+			<keyword>list</keyword>
+			<keyword>makelist</keyword>
+			<keyword>copylist</keyword>
+			<keyword>classof</keyword>
+			<keyword>class</keyword>
+			<keyword>string</keyword>
+			<keyword>char</keyword>
+			<keyword>ascii</keyword>
+			<keyword>intern</keyword>
+			<keyword>count</keyword>
+			<keyword>split</keyword>
+			<keyword>status</keyword>
+			<keyword>file-field</keyword>
+			<keyword>dirname</keyword>
+			<keyword>clargs</keyword>
+			<keyword>errormessage</keyword>
+			<keyword>get</keyword>
+			<keyword>getp</keyword>
+			<keyword>plist</keyword>
+			<keyword>nargs</keyword>
+			<keyword>butfirst</keyword>
+			<keyword>bf</keyword>
+			<keyword>butlast</keyword>
+			<keyword>bl</keyword>
+			<keyword>hexw</keyword>
+			<keyword>octw</keyword>
+			<keyword>getc</keyword>
+			<keyword>peek</keyword>
+			<keyword>readline</keyword>
+			<keyword>lineread</keyword>
+			<keyword>filenamefrompath</keyword>
+			<keyword>dirnamefrompath</keyword>
+			<keyword>dir</keyword>
+			<keyword>freadline</keyword>
+			<keyword>files</keyword>
+			<keyword>serialize</keyword>
+			<keyword>stringbuffer</keyword>
+			<keyword>timer</keyword>
+			<keyword>hexparse</keyword>
+			<keyword>floatbits</keyword>
+			<keyword>first</keyword>
+			<keyword>last</keyword>
+			<keyword>word</keyword>
+			<keyword>fput</keyword>
+			<keyword>lput</keyword>
+			<keyword>item</keyword>
+			<keyword>nth</keyword>
+			<keyword>itempos</keyword>
+			<keyword>parse</keyword>
+			<keyword>reverse</keyword>
+			<keyword>substring</keyword>
+			<keyword>ucase</keyword>
+			<keyword>replace</keyword>
+		</context>
+		<context id="keywords-predicate" style-ref="predicate">
+			<prefix>\%{kstart}</prefix><suffix>\%{kend}</suffix>
+			<keyword>and</keyword>
+			<keyword>or</keyword>
+			<keyword>not</keyword>
+			<keyword>greater\?</keyword>
+			<keyword>eq</keyword>
+			<keyword>less\?</keyword>
+			<keyword>number\?</keyword>
+			<keyword>equal\?</keyword>
+			<keyword>name\?</keyword>
+			<keyword>defined\?</keyword>
+			<keyword>empty\?</keyword>
+			<keyword>word\?</keyword>
+			<keyword>list\?</keyword>
+			<keyword>member\?</keyword>
+			<keyword>file\?</keyword>
+			<keyword>eot\?</keyword>
+			<keyword>feot\?</keyword>
+		</context>
+		
+		<context id="dotted" style-ref="variable">
+			<match>:\%{ichar}+</match>
+		</context>
+		
+		<context id="logo">
+			<include>
+				<context ref="line-comment"/>
+				<context ref="double-quoted-string"/>
+				<context ref="single-quoted-string"/>
+				<context ref="def-func"/>
+				<context ref="to-func"/>
+				<context ref="to-end"/>
+				<context ref="make"/>
+				<context ref="keywords-main"/>
+				<context ref="keywords-const"/>
+				<context ref="keywords-manip"/>
+				<context ref="keywords-predicate"/>
+				<context ref="dotted"/>
+				<context ref="nums-dec"/>
+				<context ref="nums-oct"/>
+				<context ref="nums-hex"/>
+				<context ref="list-begin"/>
+				<context ref="list-end"/>
+			</include>
+		</context>
+	</definitions>
+</language>

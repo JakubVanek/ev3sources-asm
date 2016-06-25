@@ -1,0 +1,12 @@
+;;;;;;;;;;;;;;;;;;;;
+;;
+;; Boot code
+;;
+;;;;;;;;;;;;;;;;;;;;
+
+; init function
+to startup
+	load "assembler ; load assembler
+	load "fileread  ; load C preprocessor
+	app-startup     ; boot
+end

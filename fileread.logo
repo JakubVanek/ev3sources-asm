@@ -1,0 +1,202 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Custom C source file (pre)processor
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+; prepare file for processing
+to preprocess :x
+	setread filetostring :x	; configure reader
+	clean-up-crs						; remove carriage returns
+	remove-comments					; remove comments
+	clean-up-whitespace			; simplify whitespaces
+end
+
+; remove carriage returns
+to clean-up-crs
+	setread replace lineread '\r\n|\r|\n' char 10 ; replace CRLF, CR and LF with just LF
+end
+
+; remove comments and unneeded grammar
+to remove-comments
+	clearstringbuffer ; clear string buffer
+	loop
+	 [if eot? [setread stringbuffer stop] ; after we end, set source to decommented version
+	  rc-char getc] ; process next character
+end
+
+; process character for removing unneeded stuff from source
+; remove parenthesis, commas, comments (both line and block) and quotes
+to rc-char :c
+	if :c = '(' [addtostringbuffer ' ' stop] ; strip off left parenthesis  (
+	if :c = ')' [addtostringbuffer ' ' stop] ; strip off right parenthesis )
+	if :c = ',' [addtostringbuffer ' ' stop] ; strip off commas , in array separators
+	if :c = "/ [handle-slash stop]           ; handle slash / for comments
+	if :c = char 39 [handle-quote stop]      ; handle double quote "
+	addtostringbuffer :c                     ; add the OK character to the string buffer
+end
+
+; handle quoted string in source
+to handle-quote
+	let [c "]                                     ; define character
+	addtostringbuffer char 39                     ; push one double quote to string buffer
+	loop                                          ; loop
+	 [if eot? [addtostringbuffer char 39 stop]    ; if we're at the end of the file, add second double quote and return
+	  make "c getc                                ; fetch one character
+	  if :c = char 39 [addtostringbuffer :c stop] ; if that's double quote, add it to string buffer and return
+	  addtostringbuffer quote-escape :c]          ; add escaped character to string buffer
+end
+
+; escape characters - space, quote and tabulator
+to quote-escape :c
+	if :c = char 32 [output "\s]                           ; return         space transformed to \s
+	if and :c = "\ peek = char 39 [ignore getc output "\q] ; return escaped quote transformed to \q
+	if :c = char 9 [output "\t]                            ; return           tab transformed to \t
+	output :c                                              ; return unmodified character
+end
+
+; handle slash in the source
+to handle-slash
+	if peek = "/ [skip-one-line-comment stop]   ; if doublechar is "//", skip line comment
+	if peek = "* [skip-multi-line-comment stop] ; if doublechar is "/*", skip block comment
+	addtostringbuffer "/                        ; else just add slash
+end
+
+; skip line comment
+to skip-one-line-comment
+	let [c "]                                      ; define character local
+	loop                                           ; until EOF or EOL
+	 [if eot? [stop]                               ; (return on EOF)
+	  make "c getc                                 ; read character
+	  if :c = char 10 [addtostringbuffer :c stop]] ; if it is newline, add it to string buffer and return
+end
+
+; skip block comment
+to skip-multi-line-comment
+	let [c "]        ; define character local
+	ignore getc      ; ignore one character *
+	ignore getc      ; ignore extra character
+	loop             ; until EOF or end of comment
+	 [if eot? [stop] ; (return on EOF)
+	  make "c getc   ; read one character
+	  if and :c = "* peek = "/ [ignore getc stop]] ; if doublechar is "*/", go to its end and return
+end
+
+; simplify grammar to whitespaces
+to clean-up-whitespace
+	setread replace lineread '\n[\s\n]*\n'  char 10 ; simplify multiple newlines+spaces to single newline
+	setread replace lineread '^\n*'         "       ; remove lines with just newline
+	setread replace lineread '[\n\t\s]*$'   "       ; remove whitespaces at the line ends
+	setread replace lineread '[ \t]+'       ' '     ; simplify multiple spaces+tabs to just single spaces
+	setread replace lineread '\\s'          ' '     ; simplify escaped spaces \\s to spaces
+	setread replace lineread '\s*=\s*\n\s*' ' '     ; simplify trailing equals = to spaces
+end
+
+; process header line
+to def-line :l
+	if (count :l) < 3 [stop]                                              ; if there are less than three words, return
+	if not (nth 0 :l) = "#define [stop]                                   ; if the line doesn't start with #define, return
+	let [name nth 1 :l]                                                   ; extract name of macro
+	if :name = "BYTECODE_VERSION [make "version int (last :l) * 100 stop] ; if this macro is bytecode version, extract it to version global and return
+	if not (substring :name 0 2) = "vm [stop]                             ; if macro name doesn't start with vm, return 
+	make "name intern bf bf :name                                         ; strip vm from name
+	put :name "type "define                                               ; put macro type (define) to map of the name of the macro
+	put :name "value nth 2 :l                                             ; put macro value to map of the name of the macro
+end
+
+; load macros from header file
+to read-defines
+	preprocess "bytecodes.h                         ; preprocess file
+	make "version 0                                 ; initialize global version of bytecode
+	loop                                            ; for each line
+	 [if eot? [stop]                                ; (return on end)
+	  def-line parse replace readline '\"' char 39] ; replace \" with " and process rhe line
+end
+
+; load opcode definitions from source file
+to read-opdefs
+	preprocess "bytecodes.c      ; preprocess file
+	loop                         ; for each line
+	 [if eot? [stop]             ; (return on end)
+	  read-opdef parse readline] ; process line
+end
+
+; process line for parsing opcode definitions
+to read-opdef :l
+	if (first :l) = "OC [read-OC :l] ; if first word is "OC", read opcode
+	if (first :l) = "SC [read-SC :l] ; if first word is "SC", read subcode
+end
+
+; process opcode
+to read-OC :l
+	let [op intern bf bf nth 1 :l    ; extract opcode name to op
+	     args extract-args bf bf :l] ; extract arguments to args
+	put :op "args :args              ; put args to map if opcode name
+end
+
+; process subcode
+to read-SC :l
+	let [op intern (word nth 1 :l "_ nth 2 :l) ; construct and extract subcode name from param format and subcall to op
+	     args extract-args bf bf bf :l]        ; extract arguments to args
+	put :op "args :args                        ; put args to map of subcode name
+end
+
+; extract args from array
+to extract-args :l
+	repeat count :l                    ; for each argument
+	 [if not (last :l) = 0 [output :l] ; if the last argument is not zero, return final line
+	  make "l bl :l]                   ; else strip off last argument (zero)
+	output []                          ; if call takes no arguments, return empty list
+end
+
+; read enumerations from C headers and sources
+to read-enums
+	preprocess "bytecodes.h ; load header
+	enum-loop               ; process enums
+	preprocess "bytecodes.c ; load source
+	enum-loop               ; process enums
+end
+
+; process enums in file
+to enum-loop
+	loop             ; until we're at the end of file
+	 [find-enum      ; find enum
+	  if eot? [stop] ; (return on EOF)
+	  process-enum]  ; process enum
+end
+
+; go to next enum body
+to find-enum
+	loop                                ; until EOF or enum
+	 [if eot? [stop]                    ; (return on EOF)
+	  if member? "enum readline [stop]] ; take next line and search for enum, if found, return
+end
+
+; process enum body
+to process-enum
+	let [l "]                     ; define line local
+	loop                          ; until EOF or end of enum
+	 [if eot? [stop]              ; (return on EOF)
+	  make "l readline            ; load enum line
+	  if member? "} :l [stop]     ; (return if there's closing parenthesis } )
+	  process-enum-line parse :l] ; process enum line
+end
+
+; process enum constant definition line
+to process-enum-line :l
+	if not (count :l) = 3 [stop]  ; ignore if there are not 3 words
+	if not (nth 1 :l) = "= [stop] ; ignore if second word isn't =
+	enum-define nth 0 :l nth 2 :l ; export enum constant
+end
+
+; define enum constant
+to enum-define :name :value
+	ifelse (substring :name 0 2) = "op   ; is this an opcode definition?
+	 [put intern bf bf :name "op :value] ; yes -> put it's value in map of opcode name
+	 [put :name "type "enum              ; no -> put the type=enum in map of opcode name
+	  put :name "value :value]           ;    -> put it's value in map of opcode name
+end
+
+; ignore argument
+define ignore [n][]

@@ -1,0 +1,571 @@
+; Assemble the file selected in the dialog.
+to asm
+	assemble file-field
+end
+
+; Assemble the specified file.
+to assemble :file
+	preprocess word :file ".lms                                   ; preprocess file for parsing
+	let [code lineread]                                           ; read code to local string
+	asm-init                                                      ; initialize global variables
+	pass0 :code                                                   ; pass 0: register labels, subcalls, vmthreads and defines
+	; defines
+	let [codebytes pass1 :code]                                   ; pass 1: translate opcodes etc. to numbers
+	make "codebytes pass2 :codebytes		                          ; pass 2: translate labels to offsets and objects to codes
+	make "codebytes (se program-header object-headers :codebytes) ; prepend code with program and object headers
+	listtofile (word :file ".rbf) :codebytes                      ; save to file
+	print se count :codebytes "bytes                              ; print file size in bytes
+;	print hexl :codebytes                                         ; print file size in hex bytes
+end
+
+; Initialize and clear global variables
+to asm-init
+	make "next-global 0             ; set next-global to zero
+	dolist [i :defines][erplist :i] ; delete all defines
+	erase-locals                    ; erase locals
+	make "defines []                ; define defines global
+	make "objects []                ; define objects global
+end
+
+
+;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; headers
+;;
+;;;;;;;;;;;;;;;;;;;;;;;
+
+; get program header
+to program-header
+	output (se strbytes 'LEGO'					; 4 bytes                   ; magic header
+	             4bytes :pc							; 4 bytes                   ; file size
+	             2bytes :version				; 2 bytes                   ; bytecode version
+	             2bytes count :objects	; 2 bytes                   ; object count
+	             4bytes :next-global)		; 4 bytes -> total 16 bytes ; total globals size
+end
+
+; get object header
+to object-headers
+	let [res []                                  ; define header array
+	     trg 0]                                  ; define object type
+	dolist [i :objects]                          ; for each object
+	 [make "trg 0                                ; - set type to 0 (vmthread)
+	  if (get :i "type) = "subcall [make "trg 1] ; - if object type is subcall, set type to 1 (subcall)
+	  ; - append header: {off1,off2,off3,off4, 0,0,trg1,trg2, loc1,loc2,loc3,loc4} -> total 12 bytes
+	  make "res (se :res 4bytes get :i "offset 0 0 2bytes :trg 4bytes get :i "locals)]
+	output :res                                  ; return header
+end
+
+; calculate header size, see total sizes of program-header and object-headers
+define headersize[][output 16 + 12 * count :objects]
+
+;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; pass 0 
+;; process definitions
+;;
+;;;;;;;;;;;;;;;;;;;;;;;
+
+; pass0: scan code for main definitions = vmblock, subcall, define, labels
+to pass0 :code
+	setread :code                ; put code into reader
+	make "thisobject "           ; initialize thisobject to empty word
+	loop                         ; until EOF
+	 [if eot? [stop]             ; - (return on EOF)
+	  pass0-line parse readline] ; - process each line
+end
+
+; pass0 line processor
+to pass0-line :line
+	let [token first :line]                                                          ; read first word into token local
+	if :token = "vmthread  [setup-object :line stop]                                 ; if this is definition of vmthread, call its setup and return
+	if :token = "subcall  [setup-subcall :line stop]                                 ; if this is definition of subcall,  call its setup and return
+	if :token = "define [setup-define nth 1 :line getvalue bf bf :line "define stop] ; if this is define, parse it and call its setup
+	if (last :token) = ": [setup-label intern bl :token stop]                        ; if last letter is :, call label setup
+	if param? :token [put :thisobject "params (get :thisobject "params) + 1 stop]    ; if this is parameter, increment param count by one
+end
+
+; register a label
+to setup-label :name
+	let [fname lname :name]          ; extract label name in form 'object-label' to local fname
+	put :fname "value "undefined     ; put value=undefined to map of 'object-label' name
+	put :name  "type "label          ; put  type=label     to map of 'label' name
+	put :fname "type "label          ; put  type=label     to map of 'object-label' name
+	make "defines se :defines :name  ; put 'label'        name to defines
+	make "defines se :defines :fname ; put 'object-label' name to defines
+end
+
+; register a subcall
+to setup-subcall :line
+	setup-object :line ; hand it over to object registration
+end
+
+; register an object (vmthread or subcall)
+to setup-object :line
+	let [type nth 0 :line                   ; get type of object
+	     name nth 1 :line]                  ; get name of object
+	make "objects se :objects :name         ; add object name to objects
+	setup-define :name count :objects :type ; add it to defines map of its name by its type and its number
+	put :name "params 0                     ; set parameter count for name to zero
+	make "thisobject :name                  ; set this object to actual object
+end
+
+; register a thing
+to setup-define :name :value :type
+	put :name "value :value         ; put its value to map of its name
+	put :name "type :type           ; put its type  to map of its name
+	make "defines se :defines :name ; add its name to defines
+end
+
+;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; pass 1
+;; fill in opcode, etc
+;;
+;;;;;;;;;;;;;;;;;;;;;;;
+
+; translate opcode names into opcode numerical codes
+to pass1 :code
+	let [res []]                 ; declare bytes for the new program
+	make "thisobject "           ; clear current object
+	setread :code                ; put code into reader
+	loop                         ; until EOF
+	 [if eot? [output :res]      ; - (return program bytes on EOF)
+	  pass1-line parse readline] ; - process program line
+end
+
+; process program line
+to pass1-line :line
+	ifelse empty? :thisobject   ; if we're outside any object
+	 [pass1-line-outside :line] ; pass line into outside processor
+	 [pass1-line-inside :line]  ; else pass it into inside processor
+end
+
+; process program line outside an object
+to pass1-line-outside :line
+	let [token first :line]                                      ; extract first word
+	if member? :token [vmthread subcall]                         ; if that's vmthread or subcall
+	 [add word "& nth 1 :line make "thisobject nth 1 :line       ; - add it to code in form "&name" and set it as current object
+	  if :token = "subcall [add get :thisobject "params]         ; - if this is a subcall, append parameter count
+	  stop]                                                      ; - return
+	if :token = "define [stop]                                   ; if that's define, return
+	if :token = "global                                          ; if that's global
+	    [setup-global nth 1 :line getvalue bf bf :line stop]     ; - setup global with name and value, return
+	if member? :token [DATA8 DATA16 DATA32 DATAF HANDLE]         ; if that's one of data declaration
+	    [setup-data-global :token nth 1 :line stop]              ; - setup global data with type and line
+	if member? :token [DATAS ARRAY8]                             ; if that's 1 bytes wide array declaration or a string declaration
+	    [setup-global nth 1 :line getvalue bf bf :line stop]     ; - setup global with name and size
+	if :token = "ARRAY16                                         ; if that's 2 bytes wide array declaration
+	    [setup-global nth 1 :line 2 * getvalue bf bf :line stop] ; - setup global with name and two times the size
+	if member? :token [ARRAY32 ARRAYF]                           ; if that's 4 bytes wide array declaration or a float array declaration
+	    [setup-global nth 1 :line 4 * getvalue bf bf :line stop] ; - setup global with name and four times the size
+	print (word 'Warning: outside line is invalid: "' :line '", skipping.') ; print warning about invalid keyword
+;	print (se "*** :line "??? "***)                              ; print warning about invalid keyword
+end
+
+; process program line inside an object
+to pass1-line-inside :line
+	let [token first :line]                                     ; extract first word
+	if (last :token) = ": [add lname :token stop]               ; if that's label, add the "object-name" to output and return
+	if :token = "local                                          ; if that's a local definition
+	    [setup-local nth 1 :line getvalue bf bf :line stop]     ; - setup local with its name and value and return
+	if member? :token [DATA8 DATA16 DATA32 DATAF HANDLE]        ; if that's one of data declaration
+	    [setup-data-local :token nth 1 :line stop]              ; - setup local data with its name and line and return
+	if member? :token  [DATAS ARRAY8]                           ; if that's 1 bytes wide array declaration or string declaration
+	    [setup-local nth 1 :line getvalue bf bf :line stop]     ; - setup local with its name and size and return
+	if :token = "ARRAY16                                        ; if that's 2 bytes wide array declaration
+	    [setup-local nth 1 :line 2 * getvalue bf bf :line stop] ; - setup local with its name and two times the size and return
+	if member? :token  [ARRAY32 ARRAYF]                         ; if that's 4 bytes wide array declaration or float array declaration
+	    [setup-local nth 1 :line 4 * getvalue bf bf :line stop] ; - setup local with its name and four times the size and return
+	if param? :token [setup-param :line stop]                   ; if that's parameter declaration, setup parameter with line and return
+	if :token = "{ [stop]                                       ; if that's opening curly brace, return (skip)
+	if :token = "} [pass1-} stop]                               ; if that's closing curly brace, call handler and return
+	pass1-instruction :line                                     ; pass instruction line to instruction processor
+end
+
+; process closing curly brace
+to pass1-}
+	put :thisobject "locals :next-local                         ; set final local count in current object
+	erase-locals                                                ; erase local variable definitions
+	if (get :thisobject "type) = "subcall [add get "RETURN "op] ; if this is a subcall, add return code
+	add get "OBJECT_END "op                                     ; add object termination code
+	make "thisobject "                                          ; unset current object
+end
+
+; instruction line processor
+to pass1-instruction :l
+	let [op first :line                                                ; extract opname to op
+	     template get-template :l]                                     ; extract argument configuration to template
+	if :listing? [print lput :template :l]                             ; if we are verbose, print instruction line and argument template
+	if empty? get :op "op                                              ; if there's no such opname
+	    [print (word 'Error: unknown opcode: "' :op '", skipping.') stop] ; - print error
+	ifelse :op = "CALL                                                 ; if the opname is call
+	 [make "l expand-call-arg :l]                                      ; - expand call arguments
+	 [arg-check :template :l]                                          ; else: check arguments to template
+	let [args get-args bf :l]                                          ; extract arguments
+	if :listing? [print (se count :res "-  hexl se get :op "op :args)] ; print debug message
+	add se get :op "op :args                                           ; add opcode and arguments to output
+end
+
+; extract arguments from argument line
+to get-args :l
+	let [args []]                                 ; declare arguments array
+	dolist [i :l][make "args se :args get-arg :i] ; for each unprocessed argument, process it and add it to processed arguments
+	output :args                                  ; return processed arguments
+end
+
+; parse argument out of its value
+to get-arg :i
+	if string? :i [output pass1-str :i]                                    ; if it is a string literal, encode it and return
+	if number? :i [output make-LC :i]                                      ; if it is a number literal, encode it and return
+	if and number? bl :i (last :i) = "F [output make-LC floatbits bl :i]   ; if it is a  float literal, encode it and return
+	if (first :i) = "@ [output get-hnd intern bf :i]                       ; if it is a   handle, encode that and return
+	if (first :i) = "& [output get-adr intern bf :i]                       ; it it is an address, encode that and return
+	if not empty? get :i "local [output addbits $40 make-LC get :i "local] ; if it is a local name, encode its access and number and return
+	selectq get :i "type                                ; test for optional another types of names
+	 [enum [output make-LC get :i "value]               ; encode enum member value and return
+	  global [output addbits $60 make-LC get :i "value] ; encode global access and number and return
+	  label [output lname :i]                           ; output label name
+	  vmthread [output get :i "value]                   ; return vmthread number
+	  subcall [output make-LC get :i "value]            ; encode subcall number and return
+	  define [output get-arg  get :i "value]]           ; if it is a define, recurse with define contents
+	print (word 'Error: unknown argument: "' :i '" in object "' :thisobject '", returning empty.') ; print warning
+	output []                                           ; return empty
+end
+
+; get handle to a variable
+to get-hnd :i
+	if not empty? get :i "local [output addbits $40 make-hnd get :i "local] ; try to return handle to a local 
+	if (get :i "type) = "global [output addbits $60 make-hnd get :i "value] ; try to return handle to a global
+	print (word 'Error: undefined handle: "' :i '" in object "' :thisobject '", returning empty.') ; print warning
+	output []                                                               ; return empty
+end
+
+; get address of a variable
+to get-adr :i
+	if not empty? get :i "local [output addbits $40 make-adr get :i "local] ; try to return address of a local
+	if (get :i "type) = "global [output addbits $60 make-adr get :i "value] ; try to return address of a global
+	print (word 'Error: undefined address: "' :i '" in object "' :thisobject '", returning empty.') ; print warning
+	output []                                                               ; return empty
+end
+
+; check arguments against argument configuration
+to arg-check :t :l
+	if empty? :t [stop]                  ; if there are no arguments in template, return
+	if (last :t) = "PARNO                ; if the last parameter in template is vararg count
+	    [repeat (nth count bl :t bf :l)  ; add PAR32 for each extra argument
+	        [make "t se :t "PAR32]]      ;
+	if (count bf :l) > (count :t)        ; show warning about bad argc
+	    [print (word 'Error: too many arguments: "' :l '"')]
+	if (count bf :l) < (count :t)
+	    [print (word 'Error: too few arguments: "' :l '"')]
+end
+
+; setup subcall parameter declaration
+to setup-param :l
+	let [type nth 0 :l                                  ; extract type
+	     name nth 1 :l]                                 ; extract name
+	selectq :type                                       ; switch on type - select the right code and size
+	 [IN_8 [setup-plocal $80 :name 1 ]
+	  IN_16 [setup-plocal $81  :name 2]
+	  IN_32 [setup-plocal $82  :name 4]
+	  IN_F [setup-plocal $83 :name 4]
+	  IN_S [setup-plocal $84 :name get-value nth 2 :l]  ; get size from third word
+	  OUT_8 [setup-plocal $40 :name 1]
+	  OUT_16 [setup-plocal $41 :name 2]
+	  OUT_32 [setup-plocal $42 :name 4]
+	  OUT_F [setup-plocal $43 :name 4]
+	  OUT_S [setup-plocal $44 :name get-value nth 2 :l]  ; get size from third word
+	  IO_8 [setup-plocal $c0 :name 1]
+	  IO_16 [setup-plocal $c1 :name 2]
+	  IO_32 [setup-plocal $c2 :name 4]
+	  IO_F [setup-plocal $c3 :name 4]
+	  IO_S [setup-plocal $c4 :name get-value nth 2 :l]]  ; get size from third word
+end
+
+; setup local parameter
+to setup-plocal :code :name :len
+	setup-local :name :len                         ; setup local
+	add (se :code)                                 ; insert its code to output
+	if member? :code [$44 $84 $c4] [add (se :len)] ; if it's a string, insert its length to output
+end
+
+; get number from definition or macro
+to get-value :i
+	if number? :i [output :i]                          ; if input is a number, return that
+	selectq get :i "type                               ; switch on type from map if possible
+	 [enum [output get :i "value]                      ; - enum   -> get its value
+	  define [output get :i "value]]                   ; - define -> get its value
+	print (word 'Error: in "' :thisobject '": macro not defined: "' :i '", assuming zero instead.') ; print warning
+	output 0                                           ; return zero
+end
+
+; setup global data variable
+to setup-data-global :type :name
+	selectq :type                    ; switch on type - select the right size
+	 [DATA8 [setup-global :name 1]
+	  DATA16 [setup-global :name 2]
+	  HANDLE [setup-global :name 2]
+	  DATA32 [setup-global :name 4]
+	  DATAF [setup-global :name 4]]]
+end
+
+; setup local data variable 
+to setup-data-local :type :name
+	selectq :type
+	 [DATA8 [setup-local :name 1]   ; switch on type - select the right size
+	  DATA16 [setup-local :name 2]
+	  HANDLE [setup-local :name 2]
+	  DATA32 [setup-local :name 4]
+	  DATAF [setup-local :name 4]]]
+end
+
+; setup global variable
+to setup-global :name :len
+	if :len = 2 [make "next-global align :next-global 2] ; if length is 2, round address to that boundary
+	if :len = 4 [make "next-global align :next-global 4] ; if length is 4, round address to that boundary
+	setup-define :name :next-global "global              ; register a global with its name and address
+	put :name "size :len                                 ; add size to registration
+	make "next-global :next-global + :len                ; advance next global address
+end
+
+; setup local variable
+to setup-local :name :len
+	if :len = 2 [make "next-local align :next-local 2] ; if length is 2, round address to that boundary
+	if :len = 4 [make "next-local align :next-local 4] ; if length is 4, round address to that boundary
+	put :name "local :next-local                       ; register a local with its name and address
+	make "next-local :next-local + :len                ; advance next local address
+	make "locals se :locals :name                      ; add name to locals
+end
+
+; expand call arguments
+to expand-call-arg :l
+	if not (get nth 1 :l "type) = "subcall [output :l]          ; if the referenced thing is not a subcall, return
+	output (se nth 0 :l nth 1 :l get nth 1 :l "params bf bf :l) ; return list in format [CALL,name,<parameters...>,<arguments...>]
+end
+
+; encode a string
+to pass1-str :s
+	if (count :s) = 2                        ; if string is two characters long
+	    [if (first :s) = "_                  ; - if first character is an underscore
+	        [output make-LC ascii nth 1 :s]] ;   - encode second character as numerical ASCII value
+	output (se $80 strbytes :s 0)            ; else return encoded string bytes
+end
+
+; check if x is a parameter
+to param? :x
+	output empty? replace :x '(IN|OUT|IO)_(8|16|32|F|S)' " ; true if x without IO specificator is empty
+end
+
+; add bits to n
+to addbits :bits :n
+	if number? :n [output :n + :bits]  ; if n is a number, just return a sum
+	output se (first :n) + :bits bf :n ; else take the first word of n, add bits to it and join that with the rest of n
+end
+
+; encode number; note: output bit 6 of first byte is probably an indicator of special flag description
+; little-endian coding is used
+to make-LC :n
+	if and :n > -32 :n < 32             ; if it fits in 5 bits
+	    [output logand :n $3f]          ; - return number ANDed with 0011 1111 (63) -> bits 6 & 7 are off
+	if and :n > -128 :n < 128           ; if it fits in 8 bits
+	    [output se $81                  ; - add pre flag (0100 0001) -> bit 6 is on, bit 7 is off; lower half indicates type?
+	            logand :n $ff]          ; - append number ANDed with 1111 1111 (256) and return
+	if and :n > -32768 :n < 32768       ; if it fits in 16 bits
+	    [output (se $82                 ; - add pre flag (0100 0010) -> bit 6 is on, bit 7 is off; lower half indicates type?
+	             logand :n $ff          ; - append least significant byte
+	             logand lsh :n -8 $ff)] ; - append shifted most significant byte ANDed with 1111 1111 (256) and return
+	output (se $83                      ; if it is larger (max 32 bits) - add pre flag (0100 0011) -> bit 6 is on, bit 7 is off; lower half indicates type?
+             logand :n $ff            ; - append least significant byte
+             logand lsh :n -8 $ff     ; - append next shifted byte and ANDed with 1111 1111 (256)
+             logand lsh :n -16 $ff    ; - append next shifted byte and ANDed with 1111 1111 (256)
+             logand lsh :n -24 $ff)   ; - append shifted most significant byte and ANDed with 1111 1111 (256) and return
+end
+
+; create handle from variable
+to make-hnd :n
+	if and :n > -128 :n < 128  ; if variable number fits in 8 bits
+	    [output se $91         ; - add pre flag (1001 0001) -> bit 6 is off, bit 7 is on
+	            logand :n $ff] ; - append least significant byte and return
+	output (se $92             ; else: - add pre flag (1001 0010) -> bit 6 is off, bit 7 is on
+	        logand :n 255      ; - append least significant byte
+	        lsh :n -8)         ; - append most significant byte and return
+end
+
+; create address from variable
+to make-adr :n
+	if and :n > -128 :n < 128           ; if variable number fits in 8 bits
+	    [output se $89                  ; - add pre flag (1000 1001) - interesting bits
+	            logand :n $ff]          ; - append least significant byte and return
+	if and :n > -32768 :n < 32768       ; if variable number fits in 16 bits
+	    [output (se $8A                 ; - add pre flag (1000 1010)
+	             logand :n $ff          ; - append least significant byte
+	             logand lsh :n -8 $ff)] ; - append most significant byte and return
+	output (se $8B                      ; else: - add pre flag (1000 1011)
+	        logand :n $ff               ; - append least significant byte
+	        logand lsh :n -8 $ff        ; - append next byte
+	        logand lsh :n -16 $ff       ; - append next byte
+	        logand lsh :n -24 $ff)      ; - append most significant byte and return
+end
+
+; return argument configuration
+to get-template :l
+	let [t get first :l "args]                                                  ; get argument list from opname
+	if not member? "SUBP :t [output :t]                                         ; if there's no subcode, return arguments
+	output se bl bl :t get intern (word last :t "_ nth (count :t) - 2 :l) "args ; return opcode and subcode arguments
+end
+
+; append word to output code
+to add :l
+	if empty? :l [stop]  ; avoid empty entries
+	make "res se :res :l ; add word to code
+end
+
+;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; pass 2 
+;; process labels
+;;
+;;;;;;;;;;;;;;;;;;;;;;;
+
+; pass 2: 
+to pass2 :code
+	pass2a :code        ; calculate file size and handle 
+	output pass2b :code ; ???
+end
+
+; process code for objects and labels
+to pass2a :code
+	make "pc headersize   ; set program counter to header size
+	dolist [i :code]      ; for each word of code
+	 [ifelse number? :i   ; if it is a number
+	   [make "pc :pc + 1] ; - increase program counter
+	   [pass2-syma :i]]]  ; else: - pass it to symbol identifier
+end
+
+; symbol identifier
+to pass2-syma :s
+	if (last :s) = ": [put intern bl :s "value :pc stop]    ; if it is a label: store its value (program counter) and return
+	if (first :s) = "&  [put intern bf :s "offset :pc stop] ; if it is an object: store its offset (program counter) and return
+	make "pc :pc + 3                                        ; else (it's not a symbol) advance program counter by three bytes
+end
+
+; 
+to pass2b :code
+	let [res [] offset 0]                                              ; declare new bytes and offset
+	dolist [i :code]                                                   ; for each old code word [
+	 [ifelse number? :i                                                ; if word is number
+	   [make "res se :res :i]                                          ; - just add it to new code
+	   [if (get :i "type) = "label                                     ; - if its type is label
+	     [make "offset (get :i "value) - (headersize + count :res) - 3 ;    - set offset to pc value of label - header size - code size - three
+	      make "res (se :res                                           ; - append to res
+	                    $82                                            ; - pre flag (1000 0010)
+	                    logand :offset 255                             ; - least significant byte of offset
+	                    logand 255 lsh :offset -8)]]]                  ; - most significant byte of offset
+	output :res                                                        ; ] return code
+end
+
+;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; etc.
+;;
+;;;;;;;;;;;;;;;;;;;;;;;
+
+; get array of strings in hex format from array of numbers
+to hexl :l
+	let[res []]                                 ; declare string array
+	dolist [i (se :l)]                          ; for each number
+	 [if number? :i [make "i word "$ hexw :i 2] ; if i is a number, convert it to string in hex format: "$XX"
+	  make "res se :res :i]                     ; append string to the array
+	output :res                                 ; return array
+end
+
+; erase locals in maps
+to erase-locals
+	dolist [i :locals][put :i "local []] ; clear locals in maps
+	make "locals []                      ; clear array
+	make "next-local 0                   ; clear next local index
+end
+
+; extract value from its definition
+to getvalue :l
+	let [v []]                                    ; declare list of processed tokens
+	dolist [i :l][make "v lput get-a-value :i :v] ; for each raw token, check for just macro
+	if (count :v) = 1 [output first :v]           ; if there's only one token, return that
+	if member? "+ :v [output run :v]              ; if there's +,
+	if member? "- :v [output run :v]              ;         or -,
+	if member? "* :v [output run :v]              ;         or *,
+	if member? "/ :v [output run :v]              ;         or /, run the macro and return it
+	output :v                                     ; else return what we have
+end
+
+; extract value from string
+to get-a-value :x
+	if member? :x [+ - * /][output :x] ; if it contains mathematical operators, return it as it is
+	if number? :x [output :x]          ; if it's a number, return it as it is
+	if string? :x [output :x]          ; it it's a string, return it as it is
+	output get :x "value               ; else get its value from macro/define
+end
+
+; round number n up to nearest multiple of a
+to align :n :a
+	make "n :n + :a - 1     ; add offset
+	output :a * int :n / :a ; round down
+end
+
+; get bytes from string
+to strbytes :s
+	make "s replace :s '\\r' char 13                        ; unescape carriage return
+	make "s replace :s '\\n' char 10                        ; unescape line feed
+	make "s replace :s '\\q' char 39                        ; unescape double quote
+	make "s replace :s '\\t' char 9                         ; unescape tab
+	let [res []]                                            ; declare byte array
+	dotimes [i count :s][make "res se :res ascii nth :i :s] ; for all characters: append ascii number of actual char to the array
+	output :res                                             ; return bytes
+end
+
+; save list of numbers to file as bytes
+to listtofile :file :l 
+	let [bytes bytearray count :l]                   ; define array of bytes with the same size as input
+	dotimes [i count :l][setnth :i :bytes nth :i :l] ; copy the input into the array
+	bytestofile :file :bytes                         ; save the array to file
+end
+
+; construct label name in the form "object-label"
+define lname[n][output intern (word :thisobject "- :n)]
+; check if variable is string
+define string?[a][output (classof :a) = (classof 'a')]
+; convert integer to 4 byte little-endian format
+define 4bytes[n][output se 2bytes logand :n $ffff 2bytes logand $ffff lsh :n -16]
+; convert integer to 2 byte little-endian format
+define 2bytes[n][output se logand :n $ff logand $ff lsh :n -8]
+
+; print out definitions in format "name <map contents>"
+to defines
+	dolist [i :defines][print se :i plist :i] ; print each definition
+end
+
+; check if string starts with another string
+to startswith :start :str
+	loop                                                  ; for each character of both strings at once
+	 [if empty? :start [output true]                      ; if start is empty now, return true
+	  if empty? :str [output false]                       ; if string is empty new, return false
+	  if not (first :start) = (first :str) [output false] ; if first characters of both strings are not the same, return false
+	  make "start bf :start                               ; chop first character of start away
+	  make "str bf :str]                                  ; chop first character of string away
+end
+
+; strip off n first words from x
+define bfs [x n][repeat :n [make "x bf :x] output :x]
+
+; start assembler
+to app-startup
+	if name? "defines [stop]                           ; if global defines is defined, return
+	make "defines [] make "locals []                   ; initialize defines and locals globals
+	read-enums read-opdefs read-defines                ; read C source and header files
+	make "listing? false                               ; set silent mode
+	if (count clargs) = 1 [assemble first clargs stop] ; if we have cmdline argument, just call assembler of first file and exit
+	showcc                                             ; show interpreter window
+	print '		Welcome to Logo!'                           ; print greeting
+	print 'Boot code: LEGO lmsasm with modifications'  ; print greeting
+	setfile-field "Program                             ; set lms source file name
+end
